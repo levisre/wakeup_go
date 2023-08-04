@@ -120,7 +120,7 @@ func main() {
 							txtMessage = "Machine is **offline**!"
 						}
 					case "hello":
-						txtMessage = fmt.Sprintf("Hello! `%s`\nIm your servant!", update.Message.From.UserName)
+						txtMessage = fmt.Sprintf("Hello! %s %s\nIm your servant!", update.Message.From.FirstName, update.Message.From.LastName)
 					default:
 						txtMessage = "I don't understand"
 					}
