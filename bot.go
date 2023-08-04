@@ -10,10 +10,6 @@ import (
 	"time"
 )
 
-// const MyChatId = 515733796
-//const RemotePcIP = "192.168.1.20"
-//const RemotePCMacAddr = "00:25:90:03:FA:CD"
-
 func PcPing(RemotePcIP string) bool {
 	_, err := exec.Command("ping", RemotePcIP, "-c", "1").Output()
 	if err != nil {
@@ -45,9 +41,9 @@ func main() {
 	}
 	botToken := viper.GetString("bot_token")
 	MyChatId := viper.GetInt64("chat_id")
-	// const MyChatId = 515733796
 	RemotePcIP := viper.GetString("remote_ip")
 	RemotePCMacAddr := viper.GetString("remote_mac")
+	inetInterface := viper.GetString("inet_interface")
 	bot, err := tgbotapi.NewBotAPI(botToken)
 	if err != nil {
 		log.Panic(err)
@@ -88,7 +84,7 @@ func main() {
 								log.Println("There was error, trying again with raw packet...")
 								log.Println(err)
 								// Try again with raw Packet
-								if err := wakeRaw("ens33", targetMac, nil); err != nil {
+								if err := wakeRaw(inetInterface, targetMac, nil); err != nil {
 									log.Println(err)
 									txtMessage = "Failed to send Packet"
 								} else {
