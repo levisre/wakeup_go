@@ -27,3 +27,18 @@ It use built-in WOL lib by [mdlayher](https://github.com/mdlayher/wol) and will 
 
 See `config.json.template` -> Rename it to `config.json` and edit content, place alongside with the main binary.
 
+| Field | Description                                                                                                                                                                                                              |
+| --- |--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `remote_ip` | Format: `ip:port`. Normally the port will be `7` or `9`. See [here](https://www.manageengine.com/products/oputils/tech-topics/what-is-wake-on-lan.html#:~:text=Wake%20On%20LAN%20(WOL)%20is,UDP%20ports%207%20and%209.). |
+| `remote_mac` | Format: `XX:XX:XX:XX:XX:XX`. The MAC Address of remote Machine' interface |
+| `inet_interface` | Required when Use Raw mode in *nix. It look likes `ensXX` or `ethX` |
+| `bot_token` | Telegram bot token |
+| `chat_id` | Who's the bot owner? |
+
+**TODO**:
+
+- Support WOL with Password 
+- Support Remote Shutdown
+- ...
+
+
