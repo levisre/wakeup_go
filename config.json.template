@@ -1,0 +1,6 @@
+{
+  "remote_ip": "Remote IP Goes here",
+  "remote_mac": "Remote Mac addr",
+  "bot_token": "Telegram's bot token",
+  "chat_id": 100000 // Chat ID
+}
