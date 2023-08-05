@@ -36,14 +36,29 @@ func main() {
 	viper.SetConfigType("json")
 	viper.AddConfigPath(".")
 	viper.SetConfigName("config")
+	var botToken, RemotePcIP, RemotePCMacAddr, inetInterface, wolPasswd string
+	var MyChatId int64
 	if err := viper.ReadInConfig(); err != nil {
 		panic(fmt.Errorf("fatal error config file: %w", err))
 	}
-	botToken := viper.GetString("bot_token")
-	MyChatId := viper.GetInt64("chat_id")
-	RemotePcIP := viper.GetString("remote_ip")
-	RemotePCMacAddr := viper.GetString("remote_mac")
-	inetInterface := viper.GetString("inet_interface")
+	if viper.InConfig("bot_token") {
+		botToken = viper.GetString("bot_token")
+	}
+	if viper.InConfig("chat_id") {
+		MyChatId = viper.GetInt64("chat_id")
+	}
+	if viper.InConfig("remote_ip") {
+		RemotePcIP = viper.GetString("remote_ip")
+	}
+	if viper.InConfig("remote_mac") {
+		RemotePCMacAddr = viper.GetString("remote_mac")
+	}
+	if viper.InConfig("inet_interface") {
+		inetInterface = viper.GetString("inet_interface")
+	}
+	if viper.InConfig("wol_passwd") {
+		wolPasswd = viper.GetString("wol_passwd")
+	}
 	bot, err := tgbotapi.NewBotAPI(botToken)
 	if err != nil {
 		log.Panic(err)
@@ -80,11 +95,11 @@ func main() {
 						wolSent := false
 						if err == nil {
 							// Send wakeup signal
-							if err := wakeUDP(RemotePcIP, targetMac, nil); err != nil {
+							if err := wakeUDP(RemotePcIP, targetMac, []byte(wolPasswd)); err != nil {
 								log.Println("There was error, trying again with raw packet...")
 								log.Println(err)
 								// Try again with raw Packet
-								if err := wakeRaw(inetInterface, targetMac, nil); err != nil {
+								if err := wakeRaw(inetInterface, targetMac, []byte(wolPasswd)); err != nil {
 									log.Println(err)
 									txtMessage = "Failed to send Packet"
 								} else {
