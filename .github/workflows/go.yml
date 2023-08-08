@@ -22,4 +22,4 @@ jobs:
         go-version: '1.20'
 
     - name: Build
-      run: go build . -ldflags=\"extflags=-static -w -s\"
+      run: go build -ldflags="extldflags=-static -w -s" .
