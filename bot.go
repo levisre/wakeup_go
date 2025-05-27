@@ -2,12 +2,13 @@ package main
 
 import (
 	"fmt"
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
-	"github.com/spf13/viper"
 	"log"
 	"net"
 	"os/exec"
 	"time"
+
+	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"github.com/spf13/viper"
 )
 
 func PcPing(RemotePcIP string) bool {
@@ -36,8 +37,9 @@ func main() {
 	viper.SetConfigType("json")
 	viper.AddConfigPath(".")
 	viper.SetConfigName("config")
-	var botToken, RemotePcIP, RemotePCMacAddr, inetInterface, wolPasswd string
+	var botToken, RemotePcIP, RemotePCMacAddr, inetInterface, wolPasswd, apiEndpoint string
 	var MyChatId int64
+	var bot *tgbotapi.BotAPI
 	if err := viper.ReadInConfig(); err != nil {
 		panic(fmt.Errorf("fatal error config file: %w", err))
 	}
@@ -59,7 +61,15 @@ func main() {
 	if viper.InConfig("wol_passwd") {
 		wolPasswd = viper.GetString("wol_passwd")
 	}
-	bot, err := tgbotapi.NewBotAPI(botToken)
+	// Use this for additional API endpoint, e.g: proxy
+	if viper.InConfig("api_endpoint") {
+		apiEndpoint = viper.GetString("api_endpoint")
+	}
+	// If no API endpoint is provided, use the default Telegram API endpoint
+	if apiEndpoint == "" {
+		apiEndpoint = tgbotapi.APIEndpoint
+	}
+	bot, err := tgbotapi.NewBotAPIWithAPIEndpoint(botToken, apiEndpoint)
 	if err != nil {
 		log.Panic(err)
 	}

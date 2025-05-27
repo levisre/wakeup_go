@@ -1,0 +1,15 @@
+[Unit]
+Description=Wakeup Go Service
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/wakeup-go
+ExecStart=/opt/wakeup-go/wakebot_go
+Restart=on-failure
+RestartSec=5
+# need root user to send packet
+User=root
+
+[Install]
+WantedBy=multi-user.target
