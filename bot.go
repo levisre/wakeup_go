@@ -27,9 +27,23 @@ const (
 	check
 )
 
+type userInfo struct {
+	Username      string
+	FistName      string
+	LastName      string
+	ChatID        int64
+	targetMachine []targetMachine
+	pendingAction pendingAction
+}
+
 func PcPing(ip string) bool {
+	var target_ip string
 	// Ping the remote PC to check whether it's online
-	target_ip := strings.Split(ip, ":")[0]
+	if host, _, err := net.SplitHostPort(ip); err == nil {
+		target_ip = host
+	} else {
+		target_ip = ip
+	}
 	_, err := exec.Command("ping", target_ip, "-c", "1").Output()
 	if err != nil {
 		return false
@@ -59,8 +73,9 @@ func main() {
 	var MyChatId int64
 	var bot *tgbotapi.BotAPI
 	var targets []targetMachine
-	var pendingAction pendingAction
+	var user userInfo
 
+	// Read configuration file
 	if err := viper.ReadInConfig(); err != nil {
 		panic(fmt.Errorf("fatal error config file: %w", err))
 	}
@@ -106,7 +121,8 @@ func main() {
 
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
-
+	user.targetMachine = targets
+	user.pendingAction = idle
 	updates := bot.GetUpdatesChan(u)
 	for update := range updates {
 		if update.Message != nil { // If we got a message
@@ -120,22 +136,26 @@ func main() {
 				// OK, now if the message was sent from me
 			} else {
 				log.Printf("[%s] %s", update.Message.From.UserName, update.Message.Text)
+				user.Username = update.Message.From.UserName
+				user.FistName = update.Message.From.FirstName
+				user.LastName = update.Message.From.LastName
+				user.ChatID = update.Message.Chat.ID
 				//msg.ReplyToMessageID = update.Message.MessageID
 				// Handle non-command messages when there's a pending action
 				// Here with the help of vibe coding (Gemini + Codex)
 				if !update.Message.IsCommand() {
-					if len(targets) > 0 && pendingAction != idle {
+					if len(user.targetMachine) > 0 && user.pendingAction != idle {
 						var selected *targetMachine
-						for i := range targets {
-							if targets[i].Name == update.Message.Text {
-								selected = &targets[i]
+						for i := range user.targetMachine {
+							if user.targetMachine[i].Name == update.Message.Text {
+								selected = &user.targetMachine[i]
 								break
 							}
 						}
 						if selected != nil {
-							switch pendingAction {
+							switch user.pendingAction {
 							case wake:
-								txtMessage = sendWake(bot, MyChatId, selected.IP, selected.Mac, inetInterface, wolPasswd)
+								txtMessage = sendWake(bot, user.ChatID, selected.IP, selected.Mac, inetInterface, wolPasswd)
 							case check:
 								if PcPing(selected.IP) {
 									txtMessage = fmt.Sprintf("Machine %s is **online**!", selected.Name)
@@ -145,14 +165,14 @@ func main() {
 							default:
 								txtMessage = "Invalid Command"
 							}
-							msg = tgbotapi.NewMessage(MyChatId, txtMessage)
+							msg = tgbotapi.NewMessage(user.ChatID, txtMessage)
 							msg.ParseMode = "markdown"
 							msg.ReplyMarkup = tgbotapi.NewRemoveKeyboard(true)
 							_, err := bot.Send(msg)
 							if err != nil {
 								return
 							}
-							pendingAction = idle // Reset pending action
+							user.pendingAction = idle // Reset pending action
 							continue
 						}
 					}
@@ -160,10 +180,10 @@ func main() {
 				} else {
 					switch update.Message.Command() {
 					case "wake":
-						if len(targets) > 0 {
+						if len(user.targetMachine) > 0 {
 							// Ask user to choose a target machine via reply keyboard
 							var rows [][]tgbotapi.KeyboardButton
-							for _, t := range targets {
+							for _, t := range user.targetMachine {
 								if t.Name == "" {
 									continue
 								}
@@ -178,24 +198,24 @@ func main() {
 							if err != nil {
 								return
 							}
-							pendingAction = wake
+							user.pendingAction = wake
 							continue
 						}
 						// Fallback to single configured machine
-						txtMessage = sendWake(bot, MyChatId, RemotePcIP, RemotePCMacAddr, inetInterface, wolPasswd)
+						txtMessage = sendWake(bot, user.ChatID, RemotePcIP, RemotePCMacAddr, inetInterface, wolPasswd)
 
 					case "check":
-						if len(targets) > 0 {
+						if len(user.targetMachine) > 0 {
 							// Ask user to choose a target machine via reply keyboard
 							var rows [][]tgbotapi.KeyboardButton
-							for _, t := range targets {
+							for _, t := range user.targetMachine {
 								if t.Name == "" {
 									continue
 								}
 								btn := tgbotapi.NewKeyboardButton(t.Name)
 								rows = append(rows, tgbotapi.NewKeyboardButtonRow(btn))
 							}
-							msg = tgbotapi.NewMessage(MyChatId, "Choose a machine to ping:")
+							msg = tgbotapi.NewMessage(user.ChatID, "Choose a machine to ping:")
 							rk := tgbotapi.NewReplyKeyboard(rows...)
 							rk.ResizeKeyboard = true
 							msg.ReplyMarkup = rk
@@ -203,9 +223,10 @@ func main() {
 							if err != nil {
 								return
 							}
-							pendingAction = check
+							user.pendingAction = check
 							continue
 						}
+						// Fallback to single configured machine
 						wakeStatus := PcPing(RemotePcIP)
 						if wakeStatus {
 							txtMessage = "Machine is **online**!"
@@ -214,9 +235,9 @@ func main() {
 						}
 					case "list":
 						// List all configured target machines
-						if len(targets) > 0 {
-							names := make([]string, 0, len(targets))
-							for _, t := range targets {
+						if len(user.targetMachine) > 0 {
+							names := make([]string, 0, len(user.targetMachine))
+							for _, t := range user.targetMachine {
 								if t.Name != "" {
 									names = append(names, t.Name)
 								}
@@ -232,12 +253,12 @@ func main() {
 							txtMessage = "No machines configured"
 						}
 					case "hello":
-						txtMessage = fmt.Sprintf("Hello! %s %s\nIm your servant!", update.Message.From.FirstName, update.Message.From.LastName)
+						txtMessage = fmt.Sprintf("Hello! %s %s\nIm your servant!", user.FistName, user.LastName)
 					default:
 						txtMessage = "I don't understand"
 					}
 				}
-				msg = tgbotapi.NewMessage(MyChatId, txtMessage)
+				msg = tgbotapi.NewMessage(user.ChatID, txtMessage)
 				msg.ParseMode = "markdown"
 				_, err := bot.Send(msg)
 				if err != nil {
