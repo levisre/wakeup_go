@@ -11,7 +11,7 @@ This program run as a Telegram Bot and waiting user to input command to help you
 | `/wake` | Send Magic packet (WOL) to target Machine |
 | `/check` | Check Whether the machine is up or not, by sending `ping` to its IP |
 | `/hello` | Just say "Hi", to make sure that bot is running property |
-| `/list`  | Show the list of available machine |
+| `/list`  | Show the list of available machines |
 
 Best fit when you are having a running 24/7 tiny machine likes Raspberry Pi or any embedded Platform which supports Linux and Go.
 
@@ -36,7 +36,7 @@ See `config.json.template` -> Rename it to `config.json` and edit content, place
 | `bot_token`      | Telegram bot token                                                                                                                                                                                                       |
 | `chat_id`        | Who's the bot owner?                                                                                                                                                                                                     |
 | `wol_passwd`     | Password to send to remote target, if authentication is set                                                                                                                                                              |
-| `targets` | List of targets host machine, each target contains: `name`, `mac`, `ip` |
+| `targets` | List of targets host machines, each target contains: `name`, `mac`, `ip` |
 
 **
 

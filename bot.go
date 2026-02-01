@@ -29,7 +29,7 @@ const (
 
 type userInfo struct {
 	Username      string
-	FistName      string
+	FirstName     string
 	LastName      string
 	ChatID        int64
 	targetMachine []targetMachine
@@ -137,7 +137,7 @@ func main() {
 			} else {
 				log.Printf("[%s] %s", update.Message.From.UserName, update.Message.Text)
 				user.Username = update.Message.From.UserName
-				user.FistName = update.Message.From.FirstName
+				user.FirstName = update.Message.From.FirstName
 				user.LastName = update.Message.From.LastName
 				user.ChatID = update.Message.Chat.ID
 				//msg.ReplyToMessageID = update.Message.MessageID
@@ -190,7 +190,7 @@ func main() {
 								btn := tgbotapi.NewKeyboardButton(t.Name)
 								rows = append(rows, tgbotapi.NewKeyboardButtonRow(btn))
 							}
-							msg = tgbotapi.NewMessage(MyChatId, "Choose a machine to wake:")
+							msg = tgbotapi.NewMessage(user.ChatID, "Choose a machine to wake:")
 							rk := tgbotapi.NewReplyKeyboard(rows...)
 							rk.ResizeKeyboard = true
 							msg.ReplyMarkup = rk
@@ -253,7 +253,7 @@ func main() {
 							txtMessage = "No machines configured"
 						}
 					case "hello":
-						txtMessage = fmt.Sprintf("Hello! %s %s\nIm your servant!", user.FistName, user.LastName)
+						txtMessage = fmt.Sprintf("Hello! %s %s\nIm your servant!", user.FirstName, user.LastName)
 					default:
 						txtMessage = "I don't understand"
 					}
