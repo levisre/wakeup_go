@@ -24,7 +24,6 @@
 ├── bot_test.go         # Tests for PcPing
 ├── netutil_test.go     # Tests for interface discovery, subnet matching, broadcast, ARP
 ├── wol_client_test.go  # Tests for WOL send functions
-├── config.json         # Runtime config (bot token, chat IDs, target machines)
 ├── Makefile            # Build/test/release targets
 ├── Dockerfile          # Multi-stage Docker build (scratch final image)
 ├── wakeup-go.service   # systemd unit file (runs as root for CAP_NET_RAW)
@@ -33,20 +32,7 @@
 
 ---
 
-## Configuration ([config.json](file:///home/oem/code/go/wakeup_go/config.json))
 
-```json
-{
-  "targets": [
-    { "name": "SRV",     "mac": "00:25:90:03:FA:CD", "ip": "172.16.1.16:7" },
-    { "name": "MINIWIN", "mac": "6C:4B:90:70:2C:34", "ip": "172.16.1.12:7" }
-  ],
-  "wol_passwd": "",
-  "bot_token": "<telegram-token>",
-  "chat_id": 515733796,
-  "api_endpoint": ""
-}
-```
 
 Two authorization models are supported:
 - **Legacy**: Single `chat_id` (int)
@@ -62,7 +48,7 @@ Two target models are supported:
 
 ```mermaid
 flowchart TD
-    A["main()"] --> B["Load config.json via Viper"]
+    A["main()"] --> B["Load config via Viper"]
     B --> C["Parse bot token, chat IDs, targets, WOL password, API endpoint"]
     C --> D["Create Telegram Bot API client"]
     D --> E["Start long-poll update loop"]
