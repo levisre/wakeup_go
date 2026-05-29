@@ -177,3 +177,129 @@ func TestIsPhysicalInterface_RealInterfaces(t *testing.T) {
 		}
 	}
 }
+
+func TestIsBridgeWithPhysicalPort(t *testing.T) {
+	// Docker/virtual-only bridges should return false
+	virtualBridges := []string{"docker0", "br-abc123"}
+	for _, name := range virtualBridges {
+		if isBridgeWithPhysicalPort(name) {
+			t.Errorf("isBridgeWithPhysicalPort(%q) = true, expected false (virtual-only bridge)", name)
+		}
+	}
+
+	// Non-bridge interfaces should return false
+	nonBridges := []string{"lo", "nonexistent_iface"}
+	for _, name := range nonBridges {
+		if isBridgeWithPhysicalPort(name) {
+			t.Errorf("isBridgeWithPhysicalPort(%q) = true, expected false (not a bridge)", name)
+		}
+	}
+
+	// On this machine, check if any active bridge has a physical port
+	// We detect this dynamically rather than hard-coding interface names
+	ifaces, err := GetActiveInterfaces()
+	if err != nil {
+		t.Skipf("No active interfaces: %v", err)
+	}
+	for _, iface := range ifaces {
+		if isBridgeWithPhysicalPort(iface.Name) {
+			t.Logf("Found bridge with physical port: %s (IP: %s)", iface.Name, iface.IP)
+		}
+	}
+}
+
+func TestGetActiveInterfaces_IncludesBridgeWithPhysicalPort(t *testing.T) {
+	ifaces, err := GetActiveInterfaces()
+	if err != nil {
+		t.Fatalf("GetActiveInterfaces() returned error: %v", err)
+	}
+
+	// Verify that any bridge-backed-by-physical-port on this system is included
+	foundBridge := false
+	for _, iface := range ifaces {
+		if isBridgeWithPhysicalPort(iface.Name) {
+			foundBridge = true
+			t.Logf("Bridge %s included with IP %s/%s", iface.Name, iface.IP, iface.Network)
+
+			// Verify it has valid fields
+			if iface.IP == nil {
+				t.Errorf("Bridge %s has nil IP", iface.Name)
+			}
+			if iface.Network == nil {
+				t.Errorf("Bridge %s has nil Network", iface.Name)
+			}
+			if iface.Interface.Flags&net.FlagUp == 0 {
+				t.Errorf("Bridge %s is not UP", iface.Name)
+			}
+		}
+	}
+
+	if !foundBridge {
+		t.Skip("No bridge with physical port found on this system, skipping")
+	}
+}
+
+func TestBroadcastAddr(t *testing.T) {
+	tests := []struct {
+		cidr     string
+		expected string
+	}{
+		{"192.168.1.0/24", "192.168.1.255"},
+		{"172.16.1.0/27", "172.16.1.31"},
+		{"10.0.0.0/8", "10.255.255.255"},
+		{"192.168.1.128/25", "192.168.1.255"},
+	}
+
+	for _, tc := range tests {
+		_, network, err := net.ParseCIDR(tc.cidr)
+		if err != nil {
+			t.Fatalf("Failed to parse CIDR %s: %v", tc.cidr, err)
+		}
+		bcast := BroadcastAddr(network)
+		if bcast == nil {
+			t.Errorf("BroadcastAddr(%s) returned nil", tc.cidr)
+			continue
+		}
+		if bcast.String() != tc.expected {
+			t.Errorf("BroadcastAddr(%s) = %s, expected %s", tc.cidr, bcast, tc.expected)
+		}
+	}
+}
+
+func TestLookupIPByMAC_KnownEntry(t *testing.T) {
+	// Use the gateway MAC from the ARP table — it should always be present
+	// on a machine with active network connections
+	ifaces, err := GetActiveInterfaces()
+	if err != nil {
+		t.Skipf("No active interfaces: %v", err)
+	}
+
+	// The machine's own MAC won't be in the ARP table,
+	// but any peer we've communicated with will be.
+	// Just verify the function doesn't error out.
+	for _, iface := range ifaces {
+		mac := iface.Interface.HardwareAddr
+		if mac == nil {
+			continue
+		}
+		ip, err := LookupIPByMAC(mac)
+		if err != nil {
+			t.Errorf("LookupIPByMAC(%s) returned error: %v", mac, err)
+		}
+		if ip != nil {
+			t.Logf("Found ARP entry: %s -> %s", mac, ip)
+		}
+	}
+}
+
+func TestLookupIPByMAC_NotFound(t *testing.T) {
+	// A fabricated MAC should not be in the ARP table
+	mac, _ := net.ParseMAC("AA:BB:CC:DD:EE:FF")
+	ip, err := LookupIPByMAC(mac)
+	if err != nil {
+		t.Fatalf("LookupIPByMAC returned error: %v", err)
+	}
+	if ip != nil {
+		t.Errorf("LookupIPByMAC(AA:BB:CC:DD:EE:FF) returned %s, expected nil", ip)
+	}
+}

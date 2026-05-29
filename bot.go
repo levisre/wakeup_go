@@ -65,15 +65,47 @@ func PCWakeUpCheck(ip string) bool {
 	return true
 }
 
+// ARPWakeUpCheck polls the ARP table for a target MAC address after sending
+// a WOL packet. It sends broadcast pings on the given interfaces to stimulate
+// ARP table population (since Linux doesn't add entries from Gratuitous ARP
+// for unknown hosts). Returns the discovered IP when the MAC appears, or
+// empty string on timeout.
+func ARPWakeUpCheck(mac net.HardwareAddr, ifaces []InterfaceInfo, timeout time.Duration) string {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		// Send broadcast pings to stimulate ARP responses on each subnet
+		for _, iface := range ifaces {
+			bcast := BroadcastAddr(iface.Network)
+			if bcast != nil {
+				// ping -b -c 1 -W 1 <broadcast> — best effort, ignore errors
+				_ = exec.Command("ping", "-b", "-c", "1", "-W", "1", bcast.String()).Run()
+			}
+		}
+
+		// Check ARP table for target MAC
+		ip, err := LookupIPByMAC(mac)
+		if err != nil {
+			log.Printf("ARP lookup error: %v", err)
+		}
+		if ip != nil {
+			return ip.String()
+		}
+
+		log.Printf("Waiting for %s to appear in ARP table...", mac)
+		time.Sleep(5 * time.Second)
+	}
+	return ""
+}
+
 func main() {
 	viper.SetConfigType("json")
 	viper.AddConfigPath(".")
 	viper.SetConfigName("config")
 	var botToken, RemotePcIP, RemotePCMacAddr, wolPasswd, apiEndpoint string
-	var MyChatId int64
+	var allowedChatIDs []int64
 	var bot *tgbotapi.BotAPI
 	var targets []targetMachine
-	var user userInfo
+	users := make(map[int64]*userInfo)
 
 	// Read configuration file
 	if err := viper.ReadInConfig(); err != nil {
@@ -82,9 +114,16 @@ func main() {
 	if viper.InConfig("bot_token") {
 		botToken = viper.GetString("bot_token")
 	}
-	if viper.InConfig("chat_id") {
-		MyChatId = viper.GetInt64("chat_id")
+	if viper.InConfig("chat_ids") {
+		// New format: array of allowed chat IDs
+		for _, id := range viper.GetIntSlice("chat_ids") {
+			allowedChatIDs = append(allowedChatIDs, int64(id))
+		}
+	} else if viper.InConfig("chat_id") {
+		// Legacy format: single chat ID
+		allowedChatIDs = append(allowedChatIDs, viper.GetInt64("chat_id"))
 	}
+	log.Printf("Allowed %d chat ID(s)", len(allowedChatIDs))
 	if viper.InConfig("remote_ip") {
 		RemotePcIP = viper.GetString("remote_ip")
 	}
@@ -119,26 +158,46 @@ func main() {
 
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
-	user.targetMachine = targets
-	user.pendingAction = idle
+
+	// Helper to check if a chat ID is allowed
+	isAllowedChatID := func(id int64) bool {
+		for _, allowed := range allowedChatIDs {
+			if allowed == id {
+				return true
+			}
+		}
+		return false
+	}
+
 	updates := bot.GetUpdatesChan(u)
 	for update := range updates {
 		if update.Message != nil { // If we got a message
 			var msg tgbotapi.MessageConfig
 			var txtMessage string
-			// Check Chat ID, only accept message from my ID
-			if update.Message.From.ID != MyChatId {
-				// Report abuse username to me
-				txtMessage = fmt.Sprintf("Unauthorized access from %s", update.Message.From.UserName)
-				//	msg = tgbotapi.NewMessage(MyChatId, txtMessage)
-				// OK, now if the message was sent from me
-			} else {
-				log.Printf("[%s] %s", update.Message.From.UserName, update.Message.Text)
-				user.Username = update.Message.From.UserName
-				user.FirstName = update.Message.From.FirstName
-				user.LastName = update.Message.From.LastName
-				user.ChatID = update.Message.Chat.ID
-				//msg.ReplyToMessageID = update.Message.MessageID
+			// Check Chat ID, only accept messages from allowed IDs
+			if !isAllowedChatID(update.Message.From.ID) {
+				// Log unauthorized access
+				log.Printf("Unauthorized access from %s (ID: %d)", update.Message.From.UserName, update.Message.From.ID)
+				continue
+			}
+
+			// Get or create per-user state
+			chatID := update.Message.Chat.ID
+			user, exists := users[chatID]
+			if !exists {
+				user = &userInfo{
+					targetMachine: targets,
+					pendingAction: idle,
+				}
+				users[chatID] = user
+			}
+			log.Printf("[%s] %s", update.Message.From.UserName, update.Message.Text)
+			user.Username = update.Message.From.UserName
+			user.FirstName = update.Message.From.FirstName
+			user.LastName = update.Message.From.LastName
+			user.ChatID = chatID
+
+			{
 				// Handle non-command messages when there's a pending action
 				// Here with the help of vibe coding (Gemini + Codex)
 				if !update.Message.IsCommand() {
@@ -270,53 +329,101 @@ func main() {
 func sendWake(bot *tgbotapi.BotAPI, chatID int64, ip string, mac string, wolPasswd string) string {
 	// Convert target MAC Addr
 	targetMac, err := net.ParseMAC(mac)
+	if err != nil {
+		log.Printf("Invalid MAC address: %s", mac)
+		return "Failed to send Packet"
+	}
+
 	wolSent := false
-	if err == nil {
-		// Send wakeup signal
+
+	if ip != "" {
+		// IP is known: send both UDP and raw for maximum reliability.
+		// UDP may silently fail (ARP timeout for powered-off targets),
+		// so we always follow up with a raw Ethernet broadcast.
+
+		// 1. Try UDP (best effort, no root required)
 		if err := wakeUDP(ip, targetMac, []byte(wolPasswd)); err != nil {
-			log.Println("There was error, trying again with raw packet...")
-			log.Println(err)
-			// Auto-detect the correct network interface for the target IP
-			ifaces, ifErr := GetActiveInterfaces()
-			if ifErr != nil {
-				log.Println("Failed to detect network interfaces:", ifErr)
-				return "Failed to send Packet"
-			}
+			log.Printf("UDP WOL failed: %v", err)
+		} else {
+			log.Printf("UDP WOL packet sent to %s", ip)
+			wolSent = true
+		}
+
+		// 2. Always try raw packet as well (requires CAP_NET_RAW)
+		ifaces, ifErr := GetActiveInterfaces()
+		if ifErr != nil {
+			log.Println("Failed to detect network interfaces:", ifErr)
+		} else {
 			matchedIface, ifErr := FindInterfaceForIP(ip, ifaces)
 			if ifErr != nil {
 				log.Println("Failed to resolve interface for IP:", ifErr)
-				return "Failed to send Packet"
+			} else if matchedIface == nil {
+				log.Printf("No local interface found matching subnet for %s", ip)
+			} else {
+				log.Printf("Sending raw WOL via %s for target %s", matchedIface.Name, ip)
+				if err := wakeRaw(matchedIface.Name, targetMac, []byte(wolPasswd)); err != nil {
+					log.Printf("Raw WOL failed on %s: %v", matchedIface.Name, err)
+				} else {
+					wolSent = true
+				}
 			}
-			if matchedIface == nil {
-				log.Printf("No local interface found matching subnet for %s, cannot send raw packet", ip)
-				return "Failed to send Packet"
+		}
+	} else {
+		// No IP configured: broadcast raw WOL packet on all active interfaces
+		log.Println("No IP configured for target, broadcasting raw WOL on all active interfaces...")
+		ifaces, ifErr := GetActiveInterfaces()
+		if ifErr != nil {
+			log.Println("Failed to detect network interfaces:", ifErr)
+			return "Failed to send Packet"
+		}
+		for _, iface := range ifaces {
+			if err := wakeRaw(iface.Name, targetMac, []byte(wolPasswd)); err != nil {
+				log.Printf("Failed to send raw WOL on %s: %v", iface.Name, err)
+				continue
 			}
-			log.Printf("Auto-detected interface %s for target %s", matchedIface.Name, ip)
-			// Try again with raw Packet using auto-detected interface
-			if err := wakeRaw(matchedIface.Name, targetMac, []byte(wolPasswd)); err != nil {
-				log.Println(err)
-				return "Failed to send Packet"
-			}
-			wolSent = true
-		} else {
+			log.Printf("Sent raw WOL packet via %s to %s", iface.Name, targetMac)
 			wolSent = true
 		}
-		if wolSent {
-			// Run a goroutine to continuously check whether machine is up
+	}
+
+	if wolSent {
+		if ip != "" {
+			// IP is known: monitor via ping
 			go func() {
-				wakeStatus := PCWakeUpCheck(ip) // Hang here
-				if wakeStatus {                 // Only executed when the machine is up
+				wakeStatus := PCWakeUpCheck(ip)
+				if wakeStatus {
 					txtMessage := "Machine is online!"
 					sttMsg := tgbotapi.NewMessage(chatID, txtMessage)
 					_, err := bot.Send(sttMsg)
 					if err != nil {
 						log.Println(err)
 					}
-					return
 				}
 			}()
-			return "Wake packet sent to machine!"
+		} else {
+			// No IP: monitor via ARP table to discover the DHCP-assigned IP
+			go func() {
+				ifaces, ifErr := GetActiveInterfaces()
+				if ifErr != nil {
+					log.Println("Cannot monitor ARP table:", ifErr)
+					return
+				}
+				discoveredIP := ARPWakeUpCheck(targetMac, ifaces, 5*time.Minute)
+				if discoveredIP != "" {
+					txtMessage := fmt.Sprintf("Machine is online! IP: %s", discoveredIP)
+					sttMsg := tgbotapi.NewMessage(chatID, txtMessage)
+					_, err := bot.Send(sttMsg)
+					if err != nil {
+						log.Println(err)
+					}
+				} else {
+					log.Printf("Timeout waiting for %s in ARP table", targetMac)
+					sttMsg := tgbotapi.NewMessage(chatID, "Timeout: machine did not appear on network")
+					_, _ = bot.Send(sttMsg)
+				}
+			}()
 		}
+		return "Wake packet sent to machine!"
 	}
 	return "Failed to send Packet"
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"net"
 	"os"
@@ -15,8 +16,40 @@ type InterfaceInfo struct {
 	Interface net.Interface // Underlying net.Interface
 }
 
+// isBridgeWithPhysicalPort checks whether a network interface is a Linux bridge
+// that has at least one physical NIC enslaved as a port.
+// This is useful because when a physical NIC (e.g. eno1) is a bridge port,
+// it loses its IP address — the bridge holds the IP instead.
+// Raw packets (including WOL) sent on the bridge are forwarded through the
+// physical port to the wire, so such bridges are valid for WOL.
+func isBridgeWithPhysicalPort(name string) bool {
+	// Check if this interface is a bridge by looking for the bridge directory
+	bridgePath := "/sys/class/net/" + name + "/bridge"
+	fi, err := os.Stat(bridgePath)
+	if err != nil || !fi.IsDir() {
+		return false
+	}
+
+	// List bridge ports from /sys/class/net/<bridge>/brif/
+	brIfPath := "/sys/class/net/" + name + "/brif"
+	ports, err := os.ReadDir(brIfPath)
+	if err != nil {
+		return false
+	}
+
+	// Check if any port is a physical device (has a "device" symlink)
+	for _, port := range ports {
+		portDevicePath := "/sys/class/net/" + port.Name() + "/device"
+		if _, err := os.Lstat(portDevicePath); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
 // isPhysicalInterface checks whether a network interface is a physical device
-// (e.g. eth0, ens33, wlp2s0) rather than a virtual one (docker0, virbr0, tun0, etc.).
+// (e.g. eth0, ens33, wlp2s0) or a bridge backed by a physical device,
+// rather than a purely virtual one (docker0, virbr0, tun0, etc.).
 // On Linux it checks sysfs; on other platforms it falls back to name-prefix filtering.
 func isPhysicalInterface(name string) bool {
 	// On Linux, physical NICs have a "device" symlink under sysfs
@@ -26,8 +59,14 @@ func isPhysicalInterface(name string) bool {
 		return true
 	}
 
-	// If the sysfs directory for the interface exists but has no "device" link,
-	// it's a virtual interface on Linux — reject it.
+	// Check if this is a bridge with at least one physical port.
+	// Such bridges can carry raw WOL packets to the wire.
+	if isBridgeWithPhysicalPort(name) {
+		return true
+	}
+
+	// If the sysfs directory for the interface exists but has no "device" link
+	// and is not a bridge with physical ports, it's a virtual interface — reject it.
 	sysDir := "/sys/class/net/" + name
 	if _, err := os.Stat(sysDir); err == nil {
 		return false
@@ -107,7 +146,7 @@ func GetActiveInterfaces() ([]InterfaceInfo, error) {
 // given target IP address. The targetIP can be in "ip" or "ip:port" format.
 // Returns nil (with no error) if no matching interface is found.
 func FindInterfaceForIP(targetIP string, interfaces []InterfaceInfo) (*InterfaceInfo, error) {
-	// Strip port if present (e.g. "192.168.1.100:9" -> "192.168.1.100")
+
 	host, _, err := net.SplitHostPort(targetIP)
 	if err != nil {
 		// No port present, use as-is
@@ -132,4 +171,71 @@ func FindInterfaceForIP(targetIP string, interfaces []InterfaceInfo) (*Interface
 	}
 
 	return nil, nil
+}
+
+// BroadcastAddr calculates the IPv4 broadcast address for a given subnet.
+func BroadcastAddr(network *net.IPNet) net.IP {
+	ip := network.IP.To4()
+	if ip == nil {
+		return nil
+	}
+	mask := network.Mask
+	broadcast := make(net.IP, len(ip))
+	for i := range ip {
+		broadcast[i] = ip[i] | ^mask[i]
+	}
+	return broadcast
+}
+
+// LookupIPByMAC searches the system ARP table (/proc/net/arp) for an entry
+// matching the given MAC address. Returns the associated IP address if found.
+// Only returns entries with complete ARP resolution (flags 0x2).
+//
+// /proc/net/arp format:
+//
+//	IP address       HW type     Flags       HW address            Mask     Device
+func LookupIPByMAC(mac net.HardwareAddr) (net.IP, error) {
+	f, err := os.Open("/proc/net/arp")
+	if err != nil {
+		return nil, fmt.Errorf("failed to open /proc/net/arp: %w", err)
+	}
+	defer f.Close()
+
+	targetMAC := strings.ToLower(mac.String())
+	scanner := bufio.NewScanner(f)
+
+	// Skip header line
+	if !scanner.Scan() {
+		return nil, fmt.Errorf("empty /proc/net/arp")
+	}
+
+	for scanner.Scan() {
+		fields := strings.Fields(scanner.Text())
+		if len(fields) < 4 {
+			continue
+		}
+
+		// fields[0] = IP, fields[2] = Flags, fields[3] = HW address
+		flags := fields[2]
+		hwAddr := strings.ToLower(fields[3])
+
+		// Only consider complete ARP entries (flags 0x2)
+		if flags != "0x2" {
+			continue
+		}
+
+		if hwAddr == targetMAC {
+			ip := net.ParseIP(fields[0])
+			if ip == nil {
+				continue
+			}
+			return ip.To4(), nil
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("error reading /proc/net/arp: %w", err)
+	}
+
+	return nil, nil // Not found
 }

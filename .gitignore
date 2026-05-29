@@ -2,3 +2,6 @@ config.json
 build/
 .idea
 wakebot_go
+out/
+o/
+bin/

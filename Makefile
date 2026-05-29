@@ -16,6 +16,9 @@ release:
 run: build
 	./$(BINARY_NAME)
 
+docker:
+	docker buildx build --output type=local,dest=./out .
+
 test:
 	go test -v ./...
 
@@ -28,6 +31,7 @@ help:
 	@echo "  make build   - Build the binary"
 	@echo "  make release - Build a statically linked and stripped binary for release"
 	@echo "  make run     - Build and run the application"
+	@echo "  make docker  - Build static inside musl"
 	@echo "  make test    - Run tests"
 	@echo "  make clean   - Remove binary and build artifacts"
 
