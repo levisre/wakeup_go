@@ -69,7 +69,7 @@ func main() {
 	viper.SetConfigType("json")
 	viper.AddConfigPath(".")
 	viper.SetConfigName("config")
-	var botToken, RemotePcIP, RemotePCMacAddr, inetInterface, wolPasswd, apiEndpoint string
+	var botToken, RemotePcIP, RemotePCMacAddr, wolPasswd, apiEndpoint string
 	var MyChatId int64
 	var bot *tgbotapi.BotAPI
 	var targets []targetMachine
@@ -91,9 +91,7 @@ func main() {
 	if viper.InConfig("remote_mac") {
 		RemotePCMacAddr = viper.GetString("remote_mac")
 	}
-	if viper.InConfig("inet_interface") {
-		inetInterface = viper.GetString("inet_interface")
-	}
+
 	if viper.InConfig("wol_passwd") {
 		wolPasswd = viper.GetString("wol_passwd")
 	}
@@ -155,7 +153,7 @@ func main() {
 						if selected != nil {
 							switch user.pendingAction {
 							case wake:
-								txtMessage = sendWake(bot, user.ChatID, selected.IP, selected.Mac, inetInterface, wolPasswd)
+								txtMessage = sendWake(bot, user.ChatID, selected.IP, selected.Mac, wolPasswd)
 							case check:
 								if PcPing(selected.IP) {
 									txtMessage = fmt.Sprintf("Machine %s is **online**!", selected.Name)
@@ -202,7 +200,7 @@ func main() {
 							continue
 						}
 						// Fallback to single configured machine
-						txtMessage = sendWake(bot, user.ChatID, RemotePcIP, RemotePCMacAddr, inetInterface, wolPasswd)
+						txtMessage = sendWake(bot, user.ChatID, RemotePcIP, RemotePCMacAddr, wolPasswd)
 
 					case "check":
 						if len(user.targetMachine) > 0 {
@@ -269,7 +267,7 @@ func main() {
 	}
 }
 
-func sendWake(bot *tgbotapi.BotAPI, chatID int64, ip string, mac string, inetInterface string, wolPasswd string) string {
+func sendWake(bot *tgbotapi.BotAPI, chatID int64, ip string, mac string, wolPasswd string) string {
 	// Convert target MAC Addr
 	targetMac, err := net.ParseMAC(mac)
 	wolSent := false
@@ -278,8 +276,24 @@ func sendWake(bot *tgbotapi.BotAPI, chatID int64, ip string, mac string, inetInt
 		if err := wakeUDP(ip, targetMac, []byte(wolPasswd)); err != nil {
 			log.Println("There was error, trying again with raw packet...")
 			log.Println(err)
-			// Try again with raw Packet
-			if err := wakeRaw(inetInterface, targetMac, []byte(wolPasswd)); err != nil {
+			// Auto-detect the correct network interface for the target IP
+			ifaces, ifErr := GetActiveInterfaces()
+			if ifErr != nil {
+				log.Println("Failed to detect network interfaces:", ifErr)
+				return "Failed to send Packet"
+			}
+			matchedIface, ifErr := FindInterfaceForIP(ip, ifaces)
+			if ifErr != nil {
+				log.Println("Failed to resolve interface for IP:", ifErr)
+				return "Failed to send Packet"
+			}
+			if matchedIface == nil {
+				log.Printf("No local interface found matching subnet for %s, cannot send raw packet", ip)
+				return "Failed to send Packet"
+			}
+			log.Printf("Auto-detected interface %s for target %s", matchedIface.Name, ip)
+			// Try again with raw Packet using auto-detected interface
+			if err := wakeRaw(matchedIface.Name, targetMac, []byte(wolPasswd)); err != nil {
 				log.Println(err)
 				return "Failed to send Packet"
 			}

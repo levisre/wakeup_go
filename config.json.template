@@ -2,7 +2,6 @@
   "remote_ip": "Remote IP Goes here:Port (normally 7 or 9 in UDP Mode)",
   "remote_mac": "Remote Mac addr",
   "wol_passwd": "WOL Password (if any)",
-  "inet_interface": "eth0 (work on *nix for Raw Packet)",
   "targets": [
     {
       "name": "Machine name",
