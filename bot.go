@@ -240,6 +240,29 @@ func main() {
 				// Here with the help of vibe coding (Gemini + Codex)
 				if !update.Message.IsCommand() {
 					if len(user.targetMachine) > 0 && user.pendingAction != idle {
+						// Handle "Wake All" button
+						if update.Message.Text == "⚡ Wake All" && user.pendingAction == wake {
+							var results []string
+							for i := range user.targetMachine {
+								t := &user.targetMachine[i]
+								if t.Name == "" {
+									continue
+								}
+								result := sendWake(bot, user.ChatID, t, wolPasswd)
+								results = append(results, fmt.Sprintf("• %s: %s", t.Name, result))
+							}
+							txtMessage = "**Wake All Results:**\n" + strings.Join(results, "\n")
+							msg = tgbotapi.NewMessage(user.ChatID, txtMessage)
+							msg.ParseMode = "markdown"
+							msg.ReplyMarkup = tgbotapi.NewRemoveKeyboard(true)
+							_, err := bot.Send(msg)
+							if err != nil {
+								return
+							}
+							user.pendingAction = idle
+							continue
+						}
+
 						var selected *targetMachine
 						for i := range user.targetMachine {
 							if user.targetMachine[i].Name == update.Message.Text {
@@ -299,6 +322,11 @@ func main() {
 								}
 								btn := tgbotapi.NewKeyboardButton(t.Name)
 								rows = append(rows, tgbotapi.NewKeyboardButtonRow(btn))
+							}
+							// Add "Wake All" button when there are 2+ targets
+							if len(rows) >= 2 {
+								allBtn := tgbotapi.NewKeyboardButton("⚡ Wake All")
+								rows = append(rows, tgbotapi.NewKeyboardButtonRow(allBtn))
 							}
 							msg = tgbotapi.NewMessage(user.ChatID, "Choose a machine to wake:")
 							rk := tgbotapi.NewReplyKeyboard(rows...)
