@@ -6,6 +6,7 @@ import (
 	"net"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -16,6 +17,37 @@ type targetMachine struct {
 	Name string `mapstructure:"name"`
 	Mac  string `mapstructure:"mac"`
 	IP   string `mapstructure:"ip"`
+	// Runtime-only fields (not from config, not serialized)
+	mu       sync.Mutex
+	cachedIP string
+	lastSeen time.Time
+}
+
+// ipCacheTTL controls how long a discovered IP is considered valid.
+// Configurable via "ip_cache_ttl" in config.json (Go duration string, e.g. "12h").
+var ipCacheTTL = 12 * time.Hour
+
+// resolvedIP returns the best-known IP for the target machine.
+// Config IP always takes precedence; cached IP is used if still within TTL.
+func (t *targetMachine) resolvedIP() string {
+	if t.IP != "" {
+		return t.IP
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.cachedIP != "" && time.Since(t.lastSeen) < ipCacheTTL {
+		return t.cachedIP
+	}
+	return ""
+}
+
+// updateCachedIP stores a discovered IP with a fresh timestamp.
+// Thread-safe for use from goroutines.
+func (t *targetMachine) updateCachedIP(ip string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.cachedIP = ip
+	t.lastSeen = time.Now()
 }
 
 type pendingAction int
@@ -139,6 +171,12 @@ func main() {
 			log.Println("Failed to read targets from config:", err)
 		}
 	}
+	if viper.InConfig("ip_cache_ttl") {
+		ipCacheTTL = viper.GetDuration("ip_cache_ttl")
+		log.Printf("IP cache TTL set to %s", ipCacheTTL)
+	} else {
+		log.Printf("IP cache TTL using default: %s", ipCacheTTL)
+	}
 	// Use this for additional API endpoint, e.g: proxy
 	if viper.InConfig("api_endpoint") {
 		apiEndpoint = viper.GetString("api_endpoint")
@@ -212,12 +250,27 @@ func main() {
 						if selected != nil {
 							switch user.pendingAction {
 							case wake:
-								txtMessage = sendWake(bot, user.ChatID, selected.IP, selected.Mac, wolPasswd)
+								txtMessage = sendWake(bot, user.ChatID, selected, wolPasswd)
 							case check:
-								if PcPing(selected.IP) {
-									txtMessage = fmt.Sprintf("Machine %s is **online**!", selected.Name)
+								ip := selected.resolvedIP()
+								if ip == "" {
+									// Try on-demand ARP lookup as fallback
+									if mac, err := net.ParseMAC(selected.Mac); err == nil {
+										if found, _ := LookupIPByMAC(mac); found != nil {
+											ip = found.String()
+											selected.updateCachedIP(ip)
+											log.Printf("ARP lookup discovered %s for %s", ip, selected.Name)
+										}
+									}
+								}
+								if ip != "" {
+									if PcPing(ip) {
+										txtMessage = fmt.Sprintf("Machine %s is **online**! (IP: %s)", selected.Name, ip)
+									} else {
+										txtMessage = fmt.Sprintf("Machine %s is **offline**!", selected.Name)
+									}
 								} else {
-									txtMessage = fmt.Sprintf("Machine %s is **offline**!", selected.Name)
+									txtMessage = fmt.Sprintf("Machine %s: no IP known (try /wake first)", selected.Name)
 								}
 							default:
 								txtMessage = "Invalid Command"
@@ -259,7 +312,8 @@ func main() {
 							continue
 						}
 						// Fallback to single configured machine
-						txtMessage = sendWake(bot, user.ChatID, RemotePcIP, RemotePCMacAddr, wolPasswd)
+						legacyTarget := &targetMachine{IP: RemotePcIP, Mac: RemotePCMacAddr, Name: "legacy"}
+						txtMessage = sendWake(bot, user.ChatID, legacyTarget, wolPasswd)
 
 					case "check":
 						if len(user.targetMachine) > 0 {
@@ -326,26 +380,27 @@ func main() {
 	}
 }
 
-func sendWake(bot *tgbotapi.BotAPI, chatID int64, ip string, mac string, wolPasswd string) string {
+func sendWake(bot *tgbotapi.BotAPI, chatID int64, target *targetMachine, wolPasswd string) string {
 	// Convert target MAC Addr
-	targetMac, err := net.ParseMAC(mac)
+	targetMac, err := net.ParseMAC(target.Mac)
 	if err != nil {
-		log.Printf("Invalid MAC address: %s", mac)
+		log.Printf("Invalid MAC address: %s", target.Mac)
 		return "Failed to send Packet"
 	}
 
+	resolvedIP := target.resolvedIP()
 	wolSent := false
 
-	if ip != "" {
+	if resolvedIP != "" {
 		// IP is known: send both UDP and raw for maximum reliability.
 		// UDP may silently fail (ARP timeout for powered-off targets),
 		// so we always follow up with a raw Ethernet broadcast.
 
 		// 1. Try UDP (best effort, no root required)
-		if err := wakeUDP(ip, targetMac, []byte(wolPasswd)); err != nil {
+		if err := wakeUDP(resolvedIP, targetMac, []byte(wolPasswd)); err != nil {
 			log.Printf("UDP WOL failed: %v", err)
 		} else {
-			log.Printf("UDP WOL packet sent to %s", ip)
+			log.Printf("UDP WOL packet sent to %s", resolvedIP)
 			wolSent = true
 		}
 
@@ -354,13 +409,13 @@ func sendWake(bot *tgbotapi.BotAPI, chatID int64, ip string, mac string, wolPass
 		if ifErr != nil {
 			log.Println("Failed to detect network interfaces:", ifErr)
 		} else {
-			matchedIface, ifErr := FindInterfaceForIP(ip, ifaces)
+			matchedIface, ifErr := FindInterfaceForIP(resolvedIP, ifaces)
 			if ifErr != nil {
 				log.Println("Failed to resolve interface for IP:", ifErr)
 			} else if matchedIface == nil {
-				log.Printf("No local interface found matching subnet for %s", ip)
+				log.Printf("No local interface found matching subnet for %s", resolvedIP)
 			} else {
-				log.Printf("Sending raw WOL via %s for target %s", matchedIface.Name, ip)
+				log.Printf("Sending raw WOL via %s for target %s", matchedIface.Name, resolvedIP)
 				if err := wakeRaw(matchedIface.Name, targetMac, []byte(wolPasswd)); err != nil {
 					log.Printf("Raw WOL failed on %s: %v", matchedIface.Name, err)
 				} else {
@@ -369,7 +424,7 @@ func sendWake(bot *tgbotapi.BotAPI, chatID int64, ip string, mac string, wolPass
 			}
 		}
 	} else {
-		// No IP configured: broadcast raw WOL packet on all active interfaces
+		// No IP configured or cache expired: broadcast raw WOL on all active interfaces
 		log.Println("No IP configured for target, broadcasting raw WOL on all active interfaces...")
 		ifaces, ifErr := GetActiveInterfaces()
 		if ifErr != nil {
@@ -387,10 +442,10 @@ func sendWake(bot *tgbotapi.BotAPI, chatID int64, ip string, mac string, wolPass
 	}
 
 	if wolSent {
-		if ip != "" {
+		if resolvedIP != "" {
 			// IP is known: monitor via ping
 			go func() {
-				wakeStatus := PCWakeUpCheck(ip)
+				wakeStatus := PCWakeUpCheck(resolvedIP)
 				if wakeStatus {
 					txtMessage := "Machine is online!"
 					sttMsg := tgbotapi.NewMessage(chatID, txtMessage)
@@ -410,6 +465,8 @@ func sendWake(bot *tgbotapi.BotAPI, chatID int64, ip string, mac string, wolPass
 				}
 				discoveredIP := ARPWakeUpCheck(targetMac, ifaces, 5*time.Minute)
 				if discoveredIP != "" {
+					target.updateCachedIP(discoveredIP)
+					log.Printf("Discovered IP %s for %s, cached for %s", discoveredIP, target.Mac, ipCacheTTL)
 					txtMessage := fmt.Sprintf("Machine is online! IP: %s", discoveredIP)
 					sttMsg := tgbotapi.NewMessage(chatID, txtMessage)
 					_, err := bot.Send(sttMsg)

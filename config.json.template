@@ -11,5 +11,6 @@
   ],
   "bot_token": "Telegram's bot token",
   "chat_id": 0,
-  "api_endpoint": "https://api.telegram.org/bot%s/%s"
+  "api_endpoint": "https://api.telegram.org/bot%s/%s",
+  "ip_cache_ttl": "12h"
 }
